@@ -162,7 +162,7 @@ RUN pip install --no-cache-dir --no-build-isolation /tmp/nvdiffrast \
 RUN git clone --depth 1 --recurse-submodules \
     https://github.com/graphdeco-inria/diff-gaussian-rasterization.git \
     /tmp/diff-gaussian-rasterization \
- && pip install --no-cache-dir /tmp/diff-gaussian-rasterization \
+ && pip install --no-cache-dir --no-build-isolation /tmp/diff-gaussian-rasterization \
  && rm -rf /tmp/diff-gaussian-rasterization
 
 # =============================================================================
