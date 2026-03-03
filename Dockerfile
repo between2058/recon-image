@@ -2,10 +2,10 @@
 # ReconViaGen API — Docker Image
 #
 # Target hardware : NVIDIA RTX Pro 6000 (Blackwell, sm_120)
-# CUDA toolkit    : 12.8
+# CUDA toolkit    : 12.8.1
 # cuDNN           : 9
 # Python          : 3.10
-# PyTorch         : 2.6.0 + cu126  (first release with native sm_120 support)
+# PyTorch         : 2.7.1 + cu128
 #
 # Build:
 #   docker build -t reconviagen:latest .
@@ -14,25 +14,19 @@
 #   docker run --gpus all -p 52069:52069 reconviagen:latest
 #
 # NOTE: First request triggers lazy model download from Hugging Face.
-#       Mount a volume at /cache/huggingface to persist the model across
-#       container restarts (see docker-compose.yml).
+#       Mount /pegaai:/notebooks:rw and set HF_HOME (see docker-compose.yml).
 # =============================================================================
 
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # ── Build-time arguments ──────────────────────────────────────────────────────
-# CUDA arch list — sm_120 = RTX Pro 6000 (Blackwell).
-# Broader list kept for portability; trim to just "12.0" to speed up builds.
-ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0"
+# sm_120 = RTX Pro 6000 (Blackwell). Matches local install environment.
+ARG TORCH_CUDA_ARCH_LIST="12.0"
 
-# Parallel compile jobs for ninja. Raise on build machines with many cores.
-# Warning: high values may cause OOM during flash-attn compilation.
+# Parallel compile jobs for ninja. flash-attn is capped separately at 4.
 ARG MAX_JOBS=4
 
 # ── Proxy (build-time + runtime) ──────────────────────────────────────────────
-# Required for apt-get, pip, and git clone to reach the internet through the
-# corporate proxy. Both lowercase and uppercase variants are set because
-# different tools honour different conventions.
 ARG http_proxy="http://proxy.intra:80"
 ARG https_proxy="http://proxy.intra:80"
 ARG no_proxy="localhost,127.0.0.1"
@@ -48,39 +42,34 @@ ENV http_proxy=${http_proxy} \
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    # CUDA
-    CUDA_HOME=/usr/local/cuda \
-    # Exported so every pip-compiled CUDA extension picks up the right targets
+    # Match local install: export CUDA_HOME=/usr/local/cuda-12.8
+    CUDA_HOME=/usr/local/cuda-12.8 \
+    # Match local install: export TORCH_CUDA_ARCH_LIST="12.0"
     TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
     MAX_JOBS=${MAX_JOBS} \
     # Required by TRELLIS sparse-conv backend
     SPCONV_ALGO=native \
-    # Hugging Face model cache.
-    # Host path /pegaai is mounted as /notebooks inside the container,
-    # so the effective host location is /pegaai/model_team/huggingface_cache.
+    # Hugging Face model cache → mounted from host /pegaai/model_team/huggingface_cache
     HF_HOME=/notebooks/model_team/huggingface_cache \
     TRANSFORMERS_CACHE=/notebooks/model_team/huggingface_cache \
     HUGGINGFACE_HUB_CACHE=/notebooks/model_team/huggingface_cache
 
-# ── apt proxy config (explicit, in case apt ignores ENV vars) ────────────────
+# ── apt proxy config ──────────────────────────────────────────────────────────
 RUN printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' \
       "${http_proxy}" "${https_proxy}" \
       > /etc/apt/apt.conf.d/99proxy
 
 # ── System packages ───────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Python runtime + headers (needed to compile C extensions)
     python3.10 \
     python3.10-dev \
     python3-pip \
-    # CUDA extension build chain
     build-essential \
     ninja-build \
     cmake \
     git \
     wget \
     curl \
-    # OpenGL / EGL (required by nvdiffrast for differentiable rasterization)
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
@@ -88,9 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender-dev \
     libegl1-mesa-dev \
     libgles2-mesa-dev \
-    # OpenMP (used by scipy, trimesh, etc.)
     libgomp1 \
-    # Video encoding backend for imageio-ffmpeg
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
@@ -99,116 +86,96 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1
  && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
  && python -m pip install --upgrade --no-cache-dir pip setuptools wheel
 
+# ── Ensure /usr/local/cuda-12.8 exists (CUDA_HOME points here) ───────────────
+RUN test -d /usr/local/cuda-12.8 \
+ || ln -sf /usr/local/cuda /usr/local/cuda-12.8
+
 WORKDIR /app
 
 # =============================================================================
-# STEP 1 — PyTorch 2.6 with CUDA 12.6 wheels
+# STEP 1 — PyTorch 2.7.1 + CUDA 12.8
 #
-# cu126 wheels are forward-compatible with the CUDA 12.8 runtime.
-# PyTorch 2.6 is the first stable release that includes sm_120 (Blackwell)
-# kernels compiled into the distributed binaries.
+# Exact versions confirmed working on RTX Pro 6000 (sm_120) locally.
 # =============================================================================
 RUN pip install --no-cache-dir \
-    torch==2.6.0 \
-    torchvision==0.21.0 \
-    --index-url https://download.pytorch.org/whl/cu126
+    torch==2.7.1 \
+    torchvision==0.22.1 \
+    torchaudio==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cu128
 
 # =============================================================================
 # STEP 2 — Pure-Python / non-CUDA packages
-#
-# torch / torchvision / xformers / spconv / flash-attn / nvdiffrast /
-# diff-gaussian-rasterization / utils3d are installed in later steps because
-# they either need a version matched to torch or require CUDA compilation.
 # =============================================================================
 COPY requirements-api.txt .
 RUN pip install --no-cache-dir -r requirements-api.txt
 
 # =============================================================================
-# STEP 3 — xformers (must be version-matched to torch)
+# STEP 3 — xformers 0.0.31
 # =============================================================================
-RUN pip install --no-cache-dir xformers \
-    --index-url https://download.pytorch.org/whl/cu126
+RUN pip install --no-cache-dir xformers==0.0.31
 
 # =============================================================================
-# STEP 4 — spconv
-#
-# spconv-cu120 (CUDA 12.0 ABI) is binary-compatible with the CUDA 12.8
-# runtime. If you hit "illegal instruction" or sparse-conv errors at runtime,
-# rebuild from source:
-#
-#   pip install "git+https://github.com/traveller59/spconv.git"
-#
-# A cu128 wheel may also be available on PyPI for newer spconv releases.
+# STEP 4 — spconv-cu120
 # =============================================================================
-RUN pip install --no-cache-dir spconv-cu120==2.3.6
+RUN pip install --no-cache-dir spconv-cu120
 
 # =============================================================================
-# STEP 5 — utils3d (pure Python — no CUDA compile, safe to install early)
+# STEP 5 — utils3d (pure Python, no CUDA compile)
 # =============================================================================
 RUN pip install --no-cache-dir \
     "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8"
 
 # =============================================================================
-# STEP 6 — Force-reinstall torch + torchvision from cu126 index
+# STEP 6 — Lock torch back to 2.7.1 cu128 (ABI finalise point)
 #
-# Packages installed in steps 2-5 (rembg, lpips, dreamsim …) may silently
-# downgrade torch/torchvision to the CPU-only PyPI versions.
-# This step locks them back to the CUDA build and MUST run BEFORE any CUDA
-# extension is compiled, so that nvdiffrast / diff-gaussian / flash-attn all
-# link against the exact same torch ABI they will find at runtime.
+# requirements-api.txt deps (rembg, lpips, dreamsim…) may downgrade torch to
+# the CPU PyPI version. Force-reinstall here so every CUDA extension below
+# compiles and runs against the exact same torch ABI.
 # =============================================================================
 RUN pip install --no-cache-dir --force-reinstall \
-    torch==2.6.0 \
-    torchvision==0.21.0 \
-    --index-url https://download.pytorch.org/whl/cu126
+    torch==2.7.1 \
+    torchvision==0.22.1 \
+    torchaudio==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cu128
 
 # =============================================================================
-# STEP 7 — nvdiffrast (build from local source)
-#
-# Built AFTER torch is finalised (step 6) so the compiled .so links against
-# the exact torch ABI that will be present at runtime.
+# STEP 7 — nvdiffrast (from NVlabs GitHub, built against finalised torch)
 # =============================================================================
-COPY extensions/nvdiffrast /tmp/nvdiffrast
-RUN pip install --no-cache-dir --no-build-isolation /tmp/nvdiffrast \
- && rm -rf /tmp/nvdiffrast
+RUN pip install --no-cache-dir --no-build-isolation \
+    git+https://github.com/NVlabs/nvdiffrast.git
 
 # =============================================================================
-# STEP 8 — diff-gaussian-rasterization (build from source)
+# STEP 8 — diff-gaussian-rasterization (from mip-splatting submodule)
 #
-# Built AFTER torch is finalised (step 6) for the same ABI-safety reason.
+# Uses the mip-splatting fork which is confirmed compatible with torch 2.7.1.
 # =============================================================================
 RUN git clone --depth 1 --recurse-submodules \
-    https://github.com/graphdeco-inria/diff-gaussian-rasterization.git \
-    /tmp/diff-gaussian-rasterization \
- && pip install --no-cache-dir --no-build-isolation /tmp/diff-gaussian-rasterization \
- && rm -rf /tmp/diff-gaussian-rasterization
+    https://github.com/autonomousvision/mip-splatting.git \
+    /tmp/mip-splatting \
+ && cd /tmp/mip-splatting/submodules/diff-gaussian-rasterization \
+ && pip install --no-cache-dir --no-build-isolation . \
+ && rm -rf /tmp/mip-splatting
 
 # =============================================================================
-# STEP 9 — flash-attention (build from source — expect ~20-40 min)
+# STEP 9 — flash-attn 2.8.0.post2 (built against finalised torch)
 #
-# Built AFTER torch is finalised (step 6) for the same ABI-safety reason.
-# MAX_JOBS=4 overrides the global ARG to prevent OOM during compilation.
+# Version pinned to match local install. MAX_JOBS=4 to prevent OOM.
 # =============================================================================
-RUN MAX_JOBS=4 pip install --no-cache-dir --no-build-isolation flash-attn
+RUN MAX_JOBS=4 pip install --no-cache-dir --no-build-isolation \
+    flash-attn==2.8.0.post2
 
 # =============================================================================
 # Application source
 # =============================================================================
-COPY trellis/        /app/trellis/
+COPY trellis/           /app/trellis/
 COPY reconviagen_api.py /app/reconviagen_api.py
 
-# Create mount point and output directory.
-# /notebooks is the container-side mount of the host's /pegaai directory.
-# The actual huggingface_cache path is created at runtime when the volume
-# is mounted; we only need the mount-point directory to exist here.
 RUN mkdir -p /notebooks /app/outputs
 
 # ── Port ──────────────────────────────────────────────────────────────────────
 EXPOSE 52069
 
 # ── Health check ──────────────────────────────────────────────────────────────
-# start-period is long because the first request triggers a lazy model load
-# (~minutes depending on download speed and VRAM).
 HEALTHCHECK \
     --interval=30s \
     --timeout=15s \
@@ -217,8 +184,6 @@ HEALTHCHECK \
     CMD curl -f http://localhost:52069/health || exit 1
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-# Single worker: the GPU pipeline is protected by asyncio.Lock() internally,
-# so multiple uvicorn workers would fight for the GPU without benefit.
 CMD ["python", "-m", "uvicorn", "reconviagen_api:app", \
      "--host", "0.0.0.0", \
      "--port", "52069", \
