@@ -175,7 +175,7 @@ RUN git clone --depth 1 --recurse-submodules \
 # To skip (if your model variant doesn't require flash-attn):
 #   comment out this RUN block and add `--no-deps` to the transformers install.
 # =============================================================================
-RUN pip install --no-cache-dir flash-attn --no-build-isolation
+RUN MAX_JOBS=4 pip install --no-cache-dir flash-attn --no-build-isolation
 
 # =============================================================================
 # STEP 8 — utils3d (pinned git commit, same as original requirements.txt)
