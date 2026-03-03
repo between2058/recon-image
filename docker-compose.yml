@@ -28,6 +28,10 @@ services:
         TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;10.0;12.0"
         # Parallel compile jobs — increase if build machine has many cores.
         MAX_JOBS: "4"
+        # Corporate proxy — required for apt-get, pip, git during build.
+        http_proxy: "http://proxy.intra:80"
+        https_proxy: "http://proxy.intra:80"
+        no_proxy: "localhost,127.0.0.1"
 
     image: reconviagen:latest
     container_name: reconviagen-api

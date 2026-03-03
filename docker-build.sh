@@ -28,9 +28,16 @@ Environment variables:
 EOF
 }
 
+PROXY_ARGS=(
+  --build-arg http_proxy="http://proxy.intra:80"
+  --build-arg https_proxy="http://proxy.intra:80"
+  --build-arg no_proxy="localhost,127.0.0.1"
+)
+
 build() {
   echo "🔨 Building $IMAGE (all architectures: 8.0;8.6;8.9;9.0;10.0;12.0)..."
   docker build \
+    "${PROXY_ARGS[@]}" \
     --build-arg TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0" \
     --build-arg MAX_JOBS="$(nproc)" \
     -t "$IMAGE" .
@@ -40,6 +47,7 @@ build() {
 build_fast() {
   echo "⚡ Building $IMAGE (sm_120 only — RTX Pro 6000 target)..."
   docker build \
+    "${PROXY_ARGS[@]}" \
     --build-arg TORCH_CUDA_ARCH_LIST="12.0" \
     --build-arg MAX_JOBS="$(nproc)" \
     -t "$IMAGE" .
