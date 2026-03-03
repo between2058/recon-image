@@ -169,6 +169,10 @@ RUN MAX_JOBS=4 pip install --no-cache-dir --no-build-isolation \
 # =============================================================================
 COPY trellis/           /app/trellis/
 COPY reconviagen_api.py /app/reconviagen_api.py
+# wheels/ contains local Python packages (vggt, dust3r) that trellis imports
+# via relative sys.path ("wheels/vggt"). Must live at /app/wheels/ so that
+# the relative path resolves correctly when uvicorn runs from WORKDIR /app.
+COPY wheels/            /app/wheels/
 
 RUN mkdir -p /notebooks /app/outputs
 
