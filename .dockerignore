@@ -1,0 +1,57 @@
+# =============================================================================
+# .dockerignore — files excluded from the Docker build context
+# =============================================================================
+
+# Git internals
+.git/
+.gitignore
+.gitmodules
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so          # pre-compiled extensions on host — rebuilt inside container
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Example assets (large image files, not needed at runtime)
+assets/
+
+# Gradio demo apps (not part of the API service)
+app.py
+app_fine.py
+
+# Docker files themselves (avoid recursive context)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Output / temp files that might exist on the host
+outputs/
+*.mp4
+*.glb
+*.ply
+*.ply.bak
+
+# Logs
+*.log
+logs/
+
+# CI / docs
+*.md
+LICENSE

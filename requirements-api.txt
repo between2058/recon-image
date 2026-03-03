@@ -1,0 +1,54 @@
+# =============================================================================
+# ReconViaGen API — Python dependencies
+#
+# The following packages are intentionally NOT listed here and are instead
+# installed directly in the Dockerfile (version-pinning or source build
+# required for CUDA compatibility):
+#
+#   torch / torchvision   — Step 1 (PyTorch cu126 index)
+#   xformers              — Step 3 (PyTorch cu126 index)
+#   spconv-cu120          — Step 4
+#   nvdiffrast            — Step 5 (built from local source)
+#   diff_gaussian_raster  — Step 6 (built from source)
+#   flash-attn            — Step 7 (built from source for sm_120)
+#   utils3d               — Step 8 (pinned git commit)
+# =============================================================================
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+
+# ── Image processing ──────────────────────────────────────────────────────────
+pillow==10.4.0
+opencv-python-headless==4.10.0.84
+imageio==2.36.1
+imageio-ffmpeg==0.5.1
+
+# ── Machine learning / vision ─────────────────────────────────────────────────
+timm==0.6.7
+kornia==0.8.0
+transformers==4.46.3
+huggingface_hub==0.33.4
+einops==0.8.1
+lpips==0.1.4
+dreamsim==0.2.1
+
+# ── Background removal ────────────────────────────────────────────────────────
+# rembg uses onnxruntime internally; the -gpu variant adds CUDA acceleration.
+rembg==2.0.60
+onnxruntime-gpu==1.20.1
+
+# ── 3D geometry processing ────────────────────────────────────────────────────
+trimesh==4.5.3
+xatlas==0.0.9
+pyvista==0.44.2
+pymeshfix==0.17.0
+igraph==0.11.8
+scipy==1.14.1
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+tqdm==4.67.1
+easydict==1.13
+pydantic==2.10.6
+numpy

@@ -1,0 +1,80 @@
+version: "3.8"
+
+# =============================================================================
+# ReconViaGen API — Docker Compose
+#
+# Quick start:
+#   docker compose up -d
+#
+# Rebuild after code changes:
+#   docker compose up -d --build
+#
+# Logs:
+#   docker compose logs -f reconviagen
+#
+# Check GPU inside container:
+#   docker compose exec reconviagen nvidia-smi
+# =============================================================================
+
+services:
+  reconviagen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # sm_120 = RTX Pro 6000 (Blackwell).
+        # To build for ONLY the target machine (faster build, smaller kernels):
+        #   TORCH_CUDA_ARCH_LIST: "12.0"
+        TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;10.0;12.0"
+        # Parallel compile jobs — increase if build machine has many cores.
+        MAX_JOBS: "4"
+
+    image: reconviagen:latest
+    container_name: reconviagen-api
+
+    ports:
+      - "52069:52069"
+
+    volumes:
+      # ── Host storage mount ────────────────────────────────────────────────
+      # /pegaai on the host maps to /notebooks inside the container (rw).
+      # HuggingFace cache lives at /pegaai/model_team/huggingface_cache on
+      # host → /notebooks/model_team/huggingface_cache in container.
+      # Models already downloaded on the host are reused automatically;
+      # new models are downloaded into the same host directory.
+      - /pegaai:/notebooks:rw
+
+      # ── Optional: expose generated 3D outputs to the host ────────────────
+      # Uncomment to access .glb / .ply / .mp4 files directly on the host.
+      # - ./outputs:/app/outputs
+
+    environment:
+      - SPCONV_ALGO=native
+      # HuggingFace will look here first before downloading anything.
+      - HF_HOME=/notebooks/model_team/huggingface_cache
+      - TRANSFORMERS_CACHE=/notebooks/model_team/huggingface_cache
+      - HUGGINGFACE_HUB_CACHE=/notebooks/model_team/huggingface_cache
+      # Optional: set a Hugging Face token if the model repo is gated
+      # - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # Use "all" to expose every GPU, or specify device IDs:
+              #   device_ids: ["0"]
+              count: 1
+              capabilities: [gpu]
+
+    # Shared memory for PyTorch multiprocessing / DataLoader workers.
+    # 8 GB is a safe default; reduce to 2 GB on memory-constrained hosts.
+    shm_size: "8gb"
+
+    restart: unless-stopped
+
+    # Resource limits (optional — uncomment to enforce)
+    # mem_limit: 32g
+    # memswap_limit: 32g
+
+# No named volumes needed — model cache is on the host at /pegaai.
