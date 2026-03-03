@@ -18,7 +18,7 @@
 #       container restarts (see docker-compose.yml).
 # =============================================================================
 
-FROM nvidia/cuda:12.8.0-cudnn9-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # ── Build-time arguments ──────────────────────────────────────────────────────
 # CUDA arch list — sm_120 = RTX Pro 6000 (Blackwell).
