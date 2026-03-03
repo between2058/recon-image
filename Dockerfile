@@ -150,7 +150,7 @@ RUN pip install --no-cache-dir spconv-cu120==2.3.6
 # using the TORCH_CUDA_ARCH_LIST defined above.
 # =============================================================================
 COPY extensions/nvdiffrast /tmp/nvdiffrast
-RUN pip install --no-cache-dir /tmp/nvdiffrast \
+RUN pip install --no-cache-dir --no-build-isolation /tmp/nvdiffrast \
  && rm -rf /tmp/nvdiffrast
 
 # =============================================================================
