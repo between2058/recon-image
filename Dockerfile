@@ -184,6 +184,20 @@ RUN pip install --no-cache-dir \
     "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8"
 
 # =============================================================================
+# STEP 9 — Force-reinstall torch + torchvision from cu126 index
+#
+# Some packages installed above (rembg, lpips, dreamsim …) declare torch /
+# torchvision as dependencies and pip may silently downgrade them to the
+# CPU-only PyPI versions. Reinstalling here guarantees the CUDA builds are
+# in place before the application runs.
+# This step is fast because the wheels are already cached by pip.
+# =============================================================================
+RUN pip install --no-cache-dir --force-reinstall \
+    torch==2.6.0 \
+    torchvision==0.21.0 \
+    --index-url https://download.pytorch.org/whl/cu126
+
+# =============================================================================
 # Application source
 # =============================================================================
 COPY trellis/        /app/trellis/
