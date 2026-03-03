@@ -143,21 +143,39 @@ RUN pip install --no-cache-dir xformers \
 RUN pip install --no-cache-dir spconv-cu120==2.3.6
 
 # =============================================================================
-# STEP 5 — nvdiffrast (build from local source)
+# STEP 5 — utils3d (pure Python — no CUDA compile, safe to install early)
+# =============================================================================
+RUN pip install --no-cache-dir \
+    "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8"
+
+# =============================================================================
+# STEP 6 — Force-reinstall torch + torchvision from cu126 index
 #
-# The repository ships the nvdiffrast 0.3.3 source under extensions/nvdiffrast.
-# Building from source here ensures the CUDA kernels are compiled for sm_120
-# using the TORCH_CUDA_ARCH_LIST defined above.
+# Packages installed in steps 2-5 (rembg, lpips, dreamsim …) may silently
+# downgrade torch/torchvision to the CPU-only PyPI versions.
+# This step locks them back to the CUDA build and MUST run BEFORE any CUDA
+# extension is compiled, so that nvdiffrast / diff-gaussian / flash-attn all
+# link against the exact same torch ABI they will find at runtime.
+# =============================================================================
+RUN pip install --no-cache-dir --force-reinstall \
+    torch==2.6.0 \
+    torchvision==0.21.0 \
+    --index-url https://download.pytorch.org/whl/cu126
+
+# =============================================================================
+# STEP 7 — nvdiffrast (build from local source)
+#
+# Built AFTER torch is finalised (step 6) so the compiled .so links against
+# the exact torch ABI that will be present at runtime.
 # =============================================================================
 COPY extensions/nvdiffrast /tmp/nvdiffrast
 RUN pip install --no-cache-dir --no-build-isolation /tmp/nvdiffrast \
  && rm -rf /tmp/nvdiffrast
 
 # =============================================================================
-# STEP 6 — diff-gaussian-rasterization (build from source)
+# STEP 8 — diff-gaussian-rasterization (build from source)
 #
-# The pre-built HuggingFace wheel targets older CUDA architectures.
-# Cloning and building from source generates proper sm_120 kernels.
+# Built AFTER torch is finalised (step 6) for the same ABI-safety reason.
 # =============================================================================
 RUN git clone --depth 1 --recurse-submodules \
     https://github.com/graphdeco-inria/diff-gaussian-rasterization.git \
@@ -166,36 +184,12 @@ RUN git clone --depth 1 --recurse-submodules \
  && rm -rf /tmp/diff-gaussian-rasterization
 
 # =============================================================================
-# STEP 7 — flash-attention (build from source — expect ~20-40 min)
+# STEP 9 — flash-attention (build from source — expect ~20-40 min)
 #
-# Pre-built wheels from PyPI / HuggingFace are compiled for older CUDA
-# architectures and may not include sm_120 kernels.
-# Building from source with MAX_JOBS controls CPU/RAM usage.
-#
-# To skip (if your model variant doesn't require flash-attn):
-#   comment out this RUN block and add `--no-deps` to the transformers install.
+# Built AFTER torch is finalised (step 6) for the same ABI-safety reason.
+# MAX_JOBS=4 overrides the global ARG to prevent OOM during compilation.
 # =============================================================================
-RUN MAX_JOBS=4 pip install --no-cache-dir flash-attn --no-build-isolation
-
-# =============================================================================
-# STEP 8 — utils3d (pinned git commit, same as original requirements.txt)
-# =============================================================================
-RUN pip install --no-cache-dir \
-    "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8"
-
-# =============================================================================
-# STEP 9 — Force-reinstall torch + torchvision from cu126 index
-#
-# Some packages installed above (rembg, lpips, dreamsim …) declare torch /
-# torchvision as dependencies and pip may silently downgrade them to the
-# CPU-only PyPI versions. Reinstalling here guarantees the CUDA builds are
-# in place before the application runs.
-# This step is fast because the wheels are already cached by pip.
-# =============================================================================
-RUN pip install --no-cache-dir --force-reinstall \
-    torch==2.6.0 \
-    torchvision==0.21.0 \
-    --index-url https://download.pytorch.org/whl/cu126
+RUN MAX_JOBS=4 pip install --no-cache-dir --no-build-isolation flash-attn
 
 # =============================================================================
 # Application source
