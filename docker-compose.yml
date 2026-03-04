@@ -46,6 +46,11 @@ services:
       # new models are downloaded into the same host directory.
       - /pegaai:/notebooks:rw
 
+      # ── Log persistence ───────────────────────────────────────────────────
+      # Persists app.log / access.log / uvicorn.log on the host.
+      # Logs survive container restarts and are rotated daily (14-day retention).
+      - ./logs:/app/logs
+
       # ── Optional: expose generated 3D outputs to the host ────────────────
       # Uncomment to access .glb / .ply / .mp4 files directly on the host.
       # - ./outputs:/app/outputs

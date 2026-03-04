@@ -4,6 +4,9 @@ import tempfile
 import uuid
 import gc
 import asyncio
+import datetime
+import logging
+import logging.handlers
 import torch
 import numpy as np
 import imageio
@@ -22,6 +25,64 @@ from fastapi.concurrency import run_in_threadpool
 from trellis.pipelines import TrellisVGGTTo3DPipeline
 from trellis.utils import render_utils, postprocessing_utils
 
+# =============================================================================
+# Logging 設定
+# =============================================================================
+
+os.makedirs("/app/logs", exist_ok=True)
+
+
+class TaiwanFormatter(logging.Formatter):
+    """自訂 Formatter，固定使用 UTC+8 (台灣時間)，不依賴系統時區。"""
+    _TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.datetime.fromtimestamp(record.created, tz=self._TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S") + f",{record.msecs:03.0f}"
+
+
+class HealthCheckFilter(logging.Filter):
+    """過濾 uvicorn.access 裡的 GET /health，防止 log 刷屏。"""
+    def filter(self, record):
+        return "GET /health" not in record.getMessage()
+
+
+def _rotating_file_handler(filename: str, formatter: logging.Formatter) -> logging.Handler:
+    handler = logging.handlers.TimedRotatingFileHandler(
+        f"/app/logs/{filename}",
+        when="midnight",
+        interval=1,
+        backupCount=14,
+        encoding="utf-8",
+    )
+    handler.setFormatter(formatter)
+    return handler
+
+
+# Formatters
+_fmt = TaiwanFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_access_fmt = TaiwanFormatter("%(asctime)s %(message)s")
+
+# app logger — 業務邏輯，同時輸出到 stdout + app.log
+app_logger = logging.getLogger("app")
+app_logger.setLevel(logging.DEBUG)
+app_logger.propagate = False
+app_logger.addHandler(_rotating_file_handler("app.log", _fmt))
+app_logger.addHandler(logging.StreamHandler())
+
+# uvicorn.access logger — 過濾 /health + 寫入 access.log
+_uvicorn_access = logging.getLogger("uvicorn.access")
+_uvicorn_access.addFilter(HealthCheckFilter())
+_uvicorn_access.addHandler(_rotating_file_handler("access.log", _access_fmt))
+
+# uvicorn logger — server 啟動/錯誤，寫入 uvicorn.log
+_uvicorn = logging.getLogger("uvicorn")
+_uvicorn.addHandler(_rotating_file_handler("uvicorn.log", _fmt))
+
+# =============================================================================
+
 VALID_MULTIIMAGE_ALGOS = {'multidiffusion', 'stochastic'}
 
 app = FastAPI(title="ReconViaGen API")
@@ -34,13 +95,31 @@ app.add_middleware(
 )
 
 OUTPUT_DIR = tempfile.mkdtemp()
-print(f"Output directory: {OUTPUT_DIR}")
+app_logger.info(f"Output directory: {OUTPUT_DIR}")
 
 # --- 全局變數 ---
 pipeline = None
 gpu_lock = asyncio.Lock()
 
-# --- [修改] 移除原本的 startup event，改為自定義載入函式 ---
+
+# =============================================================================
+# GPU 記憶體追蹤
+# =============================================================================
+
+def log_gpu_memory(label: str):
+    """印出目前 GPU 已分配與保留的記憶體量。"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024 ** 3
+        reserved = torch.cuda.memory_reserved() / 1024 ** 3
+        app_logger.info(
+            f"GPU memory [{label}]: allocated={allocated:.2f} GB  reserved={reserved:.2f} GB"
+        )
+
+
+# =============================================================================
+# Model Loading
+# =============================================================================
+
 def ensure_model_loaded():
     """
     檢查模型是否已載入，若未載入則執行載入動作。
@@ -48,22 +127,21 @@ def ensure_model_loaded():
     """
     global pipeline
     if pipeline is None:
-        print("⏳ [Lazy Load] 偵測到模型尚未載入，正在初始化 ReconViaGen 模型...")
+        app_logger.info("[Lazy Load] 偵測到模型尚未載入，正在初始化 ReconViaGen 模型...")
+        log_gpu_memory("before model load")
         try:
-            # 載入模型
             loaded_pipeline = TrellisVGGTTo3DPipeline.from_pretrained("esther11/trellis-vggt-v0-2")
             loaded_pipeline.cuda()
             loaded_pipeline.VGGT_model.cuda()
             loaded_pipeline.birefnet_model.cuda()
-            
+
             pipeline = loaded_pipeline
-            print("✅ [Lazy Load] 模型載入完成！")
+            log_gpu_memory("model loaded")
+            app_logger.info("[Lazy Load] 模型載入完成！")
         except Exception as e:
-            print(f"❌ 模型載入失敗: {e}")
+            app_logger.error(f"模型載入失敗: {e}")
             raise RuntimeError(f"Model loading failed: {e}")
-    else:
-        # 模型已經在記憶體中，直接略過
-        pass
+
 
 @app.get("/health")
 async def health_check():
@@ -89,13 +167,13 @@ async def generate_single_image(
         request_id = str(uuid.uuid4())
         req_dir = os.path.join(OUTPUT_DIR, request_id)
         os.makedirs(req_dir, exist_ok=True)
-        
+
         input_path = os.path.join(req_dir, "input.png")
         with open(input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
+
         image = Image.open(input_path)
-        
+
         return await _run_pipeline(
             images=[image],
             request_id=request_id,
@@ -136,25 +214,22 @@ async def generate_batch_images(
         raise HTTPException(status_code=400, detail="請至少上傳一張圖片")
 
     batch_results = []
-    print(f"📦 [Batch Start] 收到 {len(files)} 張圖片，準備排隊處理...")
+    app_logger.info(f"[Batch Start] 收到 {len(files)} 張圖片，準備排隊處理...")
 
     try:
         for i, file in enumerate(files):
-            # 1. 準備獨立的 ID 與目錄
             request_id = f"{uuid.uuid4()}_batch_{i}"
             req_dir = os.path.join(OUTPUT_DIR, request_id)
             os.makedirs(req_dir, exist_ok=True)
 
-            print(f"  👉 [{i+1}/{len(files)}] 正在處理: {file.filename}")
+            app_logger.info(f"  [{i+1}/{len(files)}] 正在處理: {file.filename}")
 
-            # 2. 儲存並讀取圖片
             input_path = os.path.join(req_dir, "input.png")
             with open(input_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
             image = Image.open(input_path)
 
-            # 3. 呼叫現有的 Pipeline
             try:
                 result = await _run_pipeline(
                     images=[image],
@@ -174,14 +249,14 @@ async def generate_batch_images(
                 batch_results.append(result)
 
             except Exception as e:
-                print(f"  ❌ [{file.filename}] 處理失敗: {e}")
+                app_logger.error(f"  [{file.filename}] 處理失敗: {e}")
                 batch_results.append({
                     "original_filename": file.filename,
                     "status": "failed",
                     "error": str(e)
                 })
 
-        print(f"✅ [Batch End] 所有任務處理完成。")
+        app_logger.info("[Batch End] 所有任務處理完成。")
 
         succeeded = sum(1 for r in batch_results if r.get("status") == "success")
         failed = len(batch_results) - succeeded
@@ -206,9 +281,8 @@ async def generate_batch_images(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Batch Critical Error: {e}")
+        app_logger.error(f"Batch Critical Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.post("/generate-multi")
@@ -261,39 +335,32 @@ async def generate_multi_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 async def _run_pipeline(
     images, request_id, seed, simplify, texture_size,
     ss_guidance_strength, ss_sampling_steps,
     slat_guidance_strength, slat_sampling_steps,
     multiimage_algo
 ):
-    # 這裡使用 Lock，確保同時間只有一個請求在載入或執行模型
     async with gpu_lock:
-        
-        # --- [修改] 在進入鎖之後，執行推理之前，確保模型已載入 ---
-        # 這樣做可以實現 Lazy Loading (第一次請求時才載入)
-        # 如果你希望每次跑完都釋放記憶體，可以在 try-finally 區塊做 unload
         await run_in_threadpool(ensure_model_loaded)
 
-        print(f"🚀 開始處理請求 {request_id}")
+        app_logger.info(f"開始處理請求 {request_id}")
         output_dir = os.path.join(OUTPUT_DIR, request_id)
 
         def run_inference():
-            # 注意：這裡使用 global pipeline，它已經在 ensure_model_loaded 中被賦值了
             global pipeline
-            
-            # 1. 顯式執行預處理
-            print(f"🔄 [Step 1] 正在執行去背與預處理... (數量: {len(images)})")
+
+            app_logger.info(f"[Step 1] 正在執行去背與預處理... (數量: {len(images)})")
             processed_images = []
             for img in images:
                 img = img.convert("RGBA")
                 proc_img = pipeline.preprocess_image(img)
                 processed_images.append(proc_img)
-            
-            print("✅ 預處理完成，圖片尺寸:", processed_images[0].size)
 
-            # 2. 執行生成
-            print("🧊 [Step 2] 開始 3D 生成...")
+            app_logger.info(f"預處理完成，圖片尺寸: {processed_images[0].size}")
+
+            app_logger.info("[Step 2] 開始 3D 生成...")
             return pipeline.run(
                 image=processed_images,
                 seed=seed,
@@ -312,16 +379,15 @@ async def _run_pipeline(
 
         try:
             outputs, _, _ = await run_in_threadpool(run_inference)
-            
-            # --- 產出檔案 ---
+
             video_gs = render_utils.render_video(outputs['gaussian'][0], num_frames=120)['color']
             video_gs_path = os.path.join(output_dir, "gs.mp4")
             imageio.mimsave(video_gs_path, video_gs, fps=15)
-            
+
             video_mesh = render_utils.render_video(outputs['mesh'][0], num_frames=120)['normal']
             video_mesh_path = os.path.join(output_dir, "mesh.mp4")
             imageio.mimsave(video_mesh_path, video_mesh, fps=15)
-            
+
             video_rf_path = os.path.join(output_dir, "rf.mp4")
             shutil.copy(video_gs_path, video_rf_path)
 
@@ -330,11 +396,10 @@ async def _run_pipeline(
             glb = postprocessing_utils.to_glb(gs, mesh, simplify=simplify, texture_size=texture_size, verbose=False)
             glb_path = os.path.join(output_dir, "output.glb")
             glb.export(glb_path)
-            
+
             ply_path = os.path.join(output_dir, "output.ply")
             gs.save_ply(ply_path)
 
-            # 清理暫存的 CUDA 記憶體 (不是卸載模型，只是整理碎片)
             torch.cuda.empty_cache()
 
             return {
@@ -346,32 +411,33 @@ async def _run_pipeline(
             }
 
         except Exception as e:
-            print(f"❌ Error: {e}")
+            app_logger.error(f"Inference Error: {e}")
             raise e
-        
-        # [選項] 如果你想在每次推理完後完全釋放模型以節省 VRAM，
-        # 請取消註解以下 finally 區塊 (這會導致下一次請求變慢)：
+
         finally:
             # global pipeline
             # del pipeline
             # pipeline = None
             # gc.collect()
             torch.cuda.empty_cache()
-            # print("🧹 模型已卸載")
+            log_gpu_memory("after flush")
+            # app_logger.info("模型已卸載")
+
 
 @app.get("/download/{request_id}/{file_name}")
 async def download_file(request_id: str, file_name: str):
     file_path = os.path.join(OUTPUT_DIR, request_id, file_name)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="找不到文件")
-    
+
     media_type = 'application/octet-stream'
     if file_name.endswith('.mp4'):
         media_type = 'video/mp4'
     elif file_name.endswith('.glb'):
         media_type = 'model/gltf-binary'
-        
+
     return FileResponse(file_path, media_type=media_type, filename=file_name)
+
 
 @app.on_event("shutdown")
 async def cleanup():
@@ -379,6 +445,7 @@ async def cleanup():
         shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
     except Exception:
         pass
+
 
 if __name__ == "__main__":
     import uvicorn
