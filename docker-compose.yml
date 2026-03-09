@@ -3,7 +3,12 @@ version: "3.8"
 # =============================================================================
 # ReconViaGen API — Docker Compose
 #
+# Machine-specific config lives in .env (gitignored).
+# Copy .env.example → .env and set HF_CACHE_PATH before first run.
+#
 # Quick start:
+#   cp .env.example .env        # first time on a new machine
+#   $EDITOR .env                # set HF_CACHE_PATH
 #   docker compose up -d
 #
 # Rebuild after code changes:
@@ -11,6 +16,7 @@ version: "3.8"
 #
 # Logs:
 #   docker compose logs -f reconviagen
+#   tail -f logs/app.log
 #
 # Check GPU inside container:
 #   docker compose exec reconviagen nvidia-smi
@@ -38,13 +44,10 @@ services:
       - "52069:52069"
 
     volumes:
-      # ── Host storage mount ────────────────────────────────────────────────
-      # /pegaai on the host maps to /notebooks inside the container (rw).
-      # HuggingFace cache lives at /pegaai/model_team/huggingface_cache on
-      # host → /notebooks/model_team/huggingface_cache in container.
-      # Models already downloaded on the host are reused automatically;
-      # new models are downloaded into the same host directory.
-      - /pegaai:/notebooks:rw
+      # ── HuggingFace model cache ───────────────────────────────────────────
+      # Host path comes from .env (HF_CACHE_PATH); always mounted at
+      # /app/hf_cache inside the container so env vars never need to change.
+      - ${HF_CACHE_PATH}:/app/hf_cache:rw
 
       # ── Log persistence ───────────────────────────────────────────────────
       # Persists app.log / access.log / uvicorn.log on the host.
@@ -58,9 +61,10 @@ services:
     environment:
       - SPCONV_ALGO=native
       # HuggingFace will look here first before downloading anything.
-      - HF_HOME=/notebooks/model_team/huggingface_cache
-      - TRANSFORMERS_CACHE=/notebooks/model_team/huggingface_cache
-      - HUGGINGFACE_HUB_CACHE=/notebooks/model_team/huggingface_cache
+      # Container-side path is fixed; only the host path varies (see .env).
+      - HF_HOME=/app/hf_cache
+      - TRANSFORMERS_CACHE=/app/hf_cache
+      - HUGGINGFACE_HUB_CACHE=/app/hf_cache
       # Optional: set a Hugging Face token if the model repo is gated
       # - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
 
@@ -83,5 +87,3 @@ services:
     # Resource limits (optional — uncomment to enforce)
     # mem_limit: 32g
     # memswap_limit: 32g
-
-# No named volumes needed — model cache is on the host at /pegaai.

@@ -1,0 +1,15 @@
+# Machine-specific config — never commit
+.env
+
+# Log files (persisted on host via volume mount)
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Outputs
+outputs/
