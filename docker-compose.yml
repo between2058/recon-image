@@ -73,9 +73,9 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              # Use "all" to expose every GPU, or specify device IDs:
-              #   device_ids: ["0"]
-              count: 1
+              # GPU index comes from .env (GPU_ID=0, 1, 2 …)
+              # Run `nvidia-smi` on the host to see available devices.
+              device_ids: ["${GPU_ID}"]
               capabilities: [gpu]
 
     # Shared memory for PyTorch multiprocessing / DataLoader workers.
